@@ -13,6 +13,8 @@ import java.util.List;
 import ghidra.app.script.GhidraScript;
 import ghidra.util.task.TaskMonitor;
 import ghidra.program.model.address.*;
+import ghidra.program.model.lang.OperandType;
+import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Listing;
 
 public class StringDeobfuscator extends GhidraScript {
@@ -85,14 +87,38 @@ public class StringDeobfuscator extends GhidraScript {
         for (int i = 0; i < longStringLocations.size(); i++) {
             var patternAddr = longStringLocations.get(i);
             println("[" + i + "] " + patternAddr);
+            // Extract decryption key
             var keyInstruction = listing.getInstructionAt(patternAddr);
-            var keyScalar = keyInstruction.getScalar(1);
-            if (keyScalar == null) {
-                println("\tCould not extract decryption key");
+            if (keyInstruction.getOperandType(1) != OperandType.SCALAR) {
+                println("\tCould not extract decryption key, second operand of MOV is not a scalar");
                 continue;
             }
-            var keyBytes = keyScalar.byteArrayValue();
+            var keyBytes = keyInstruction.getScalar(1).byteArrayValue();
             println("\tFound key: " + keyFormat.formatHex(keyBytes));
+
+            // Extract string length
+            Instruction decryptionInstruction = listing.getInstructionAt(patternAddr);
+            int cmpSearchLimit = 20;
+            Instruction cmpLenInstruction = null;
+            for (int iCounter = 0; iCounter < cmpSearchLimit; iCounter++) {
+                if (decryptionInstruction.getMnemonicString().equals("CMP")) {
+                    cmpLenInstruction = decryptionInstruction;
+                    break;
+                }
+                decryptionInstruction = decryptionInstruction.getNext();
+            }
+            if (cmpLenInstruction == null) {
+                println("\tCould not find CMP instruction");
+                continue;
+            }
+
+            if (cmpLenInstruction.getOperandType(1) != OperandType.SCALAR) {
+                println("\tSecond operand of CMP is not a scalar");
+                continue;
+            }
+            var len = cmpLenInstruction.getScalar(1).getValue();
+            println("\tFound string length: " + len);
+
         }
 
         println("Short string patterns found: " + shortStringLocations.size());
