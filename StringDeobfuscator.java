@@ -13,6 +13,7 @@ import java.util.List;
 import ghidra.app.script.GhidraScript;
 import ghidra.util.task.TaskMonitor;
 import ghidra.program.model.address.*;
+import ghidra.program.model.listing.Listing;
 
 public class StringDeobfuscator extends GhidraScript {
 
@@ -77,15 +78,28 @@ public class StringDeobfuscator extends GhidraScript {
         var longStringLocations = findPattern(longStringPattern);
         var shortStringLocations = findPattern(shortStringPattern);
 
+        var keyFormat = HexFormat.ofDelimiter(" ");
+        var listing = currentProgram.getListing();
+
         println("Long string patterns found: " + longStringLocations.size());
         for (int i = 0; i < longStringLocations.size(); i++) {
-            println("\t[" + i + "] " + longStringLocations.get(i));
+            var patternAddr = longStringLocations.get(i);
+            println("[" + i + "] " + patternAddr);
+            var keyInstruction = listing.getInstructionAt(patternAddr);
+            var keyScalar = keyInstruction.getScalar(1);
+            if (keyScalar == null) {
+                println("\tCould not extract decryption key");
+                continue;
+            }
+            var keyBytes = keyScalar.byteArrayValue();
+            println("\tFound key: " + keyFormat.formatHex(keyBytes));
         }
 
         println("Short string patterns found: " + shortStringLocations.size());
         for (int i = 0; i < shortStringLocations.size(); i++) {
             println("\t[" + i + "] " + shortStringLocations.get(i));
         }
+
     }
 
 }
