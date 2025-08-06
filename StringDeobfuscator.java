@@ -1,4 +1,6 @@
-//TODO write a description for this script
+//Finds strings obfuscated by https://github.com/adamyaxley/Obfuscate and deobfuscates them.
+//Check out the program in the obfuscated-example directory as an example target.
+//Different compilers and optimization levels may require changes to the script.
 //@author uintmax
 //@category Deobfuscation
 //@keybinding 
@@ -16,26 +18,26 @@ import ghidra.program.model.address.*;
 import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Listing;
+import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.Memory;
 
-public class StringDeobfuscator extends GhidraScript {
-
-    private List<Address> findPattern(String pattern) {
-        var bytes = pattern.split(" ");
-        String parsablePattern = "";
-        byte[] mask = new byte[bytes.length];
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i].equals("??")) {
-                parsablePattern += "00 ";
+class Utils {
+    public static List<Address> findPattern(String pattern, Memory mem) {
+        var byteStrArr = pattern.split(" ");
+        byte[] patternBytes = new byte[byteStrArr.length];
+        byte[] mask = new byte[byteStrArr.length];
+        for (int i = 0; i < byteStrArr.length; i++) {
+            // Wildcard
+            if (byteStrArr[i].equals("??")) {
+                patternBytes[i] = 0x00;
                 mask[i] = 0x00;
             } else {
-                parsablePattern += bytes[i] + " ";
+                patternBytes[i] = (byte) Integer.parseInt(byteStrArr[i], 16);
                 mask[i] = (byte) 0xFF;
             }
         }
-        var patternBytes = HexFormat.ofDelimiter(" ").parseHex(parsablePattern.stripTrailing());
         var patternLocations = new ArrayList<Address>();
 
-        var mem = currentProgram.getMemory();
         var blocks = mem.getBlocks();
 
         for (var block : blocks) {
@@ -55,6 +57,109 @@ public class StringDeobfuscator extends GhidraScript {
 
         return patternLocations;
     }
+
+    public static Instruction findFirstInstruction(String mnemonic, Address startAddr, Listing listing, boolean forward,
+            int searchLimit) {
+        // TODO: Direction
+        Instruction currInstr = listing.getInstructionAt(startAddr);
+        Instruction targetInstr = null;
+        for (int iCounter = 0; iCounter < searchLimit; iCounter++) {
+            if (currInstr.getMnemonicString().equals(mnemonic)) {
+                targetInstr = currInstr;
+                break;
+            }
+            currInstr = currInstr.getNext();
+        }
+        if (targetInstr == null) {
+            throw new RuntimeException("Could not find " + mnemonic + " instruction");
+        }
+
+        return targetInstr;
+    }
+}
+
+abstract class ObfuscatedString {
+
+    public ObfuscatedString(Address addr, Program program) {
+        this.program = program;
+        this.listing = program.getListing();
+        this.mem = program.getMemory();
+        this.addr = addr;
+
+        key = extractKey();
+        len = extractLength();
+    }
+
+    protected Address addr;
+    protected Program program;
+    protected Listing listing;
+    protected Memory mem;
+    private byte[] key;
+    private long len;
+    private String deobfuscatedStr;
+
+    protected abstract long extractLength();
+
+    private byte[] extractKey() {
+        var keyInstruction = listing.getInstructionAt(addr);
+        if (keyInstruction.getOperandType(1) != OperandType.SCALAR) {
+            throw new RuntimeException("Could not extract decryption key, second operand of MOV is not a scalar");
+        }
+        var keyBytes = keyInstruction.getScalar(1).byteArrayValue();
+        return keyBytes;
+    }
+
+    public Address getAddress() {
+        return addr;
+    }
+
+    public byte[] getKey() {
+        return key;
+    }
+
+    public long getLength() {
+        return len;
+    }
+
+    public String getDeobfuscatedStr() {
+        return deobfuscatedStr;
+    }
+
+}
+
+class ObfLongString extends ObfuscatedString {
+
+    public ObfLongString(Address addr, Program program) {
+        super(addr, program);
+    }
+
+    @Override
+    protected long extractLength() {
+        var cmpLenInstruction = Utils.findFirstInstruction("CMP", addr, listing, true, 20);
+
+        if (cmpLenInstruction.getOperandType(1) != OperandType.SCALAR) {
+            throw new RuntimeException("Second operand of CMP is not a scalar");
+        }
+        var len = cmpLenInstruction.getScalar(1).getValue();
+        return len;
+    }
+
+}
+
+class ObfShortString extends ObfuscatedString {
+
+    public ObfShortString(Address addr, Program program) {
+        super(addr, program);
+    }
+
+    @Override
+    protected long extractLength() {
+        return 0;
+    }
+
+}
+
+public class StringDeobfuscator extends GhidraScript {
 
     public void run() throws Exception {
         /*-
@@ -77,53 +182,29 @@ public class StringDeobfuscator extends GhidraScript {
          */
         final var shortStringPattern = "48 be ?? ?? ?? ?? ?? ?? ?? ?? 48 89 f2 48 d3 ea 30 10";
 
-        var longStringLocations = findPattern(longStringPattern);
-        var shortStringLocations = findPattern(shortStringPattern);
-
-        var keyFormat = HexFormat.ofDelimiter(" ");
-        var listing = currentProgram.getListing();
+        var longStringLocations = Utils.findPattern(longStringPattern, currentProgram.getMemory());
+        var shortStringLocations = Utils.findPattern(shortStringPattern, currentProgram.getMemory());
 
         println("Long string patterns found: " + longStringLocations.size());
-        for (int i = 0; i < longStringLocations.size(); i++) {
-            var patternAddr = longStringLocations.get(i);
-            println("[" + i + "] " + patternAddr);
-            // Extract decryption key
-            var keyInstruction = listing.getInstructionAt(patternAddr);
-            if (keyInstruction.getOperandType(1) != OperandType.SCALAR) {
-                println("\tCould not extract decryption key, second operand of MOV is not a scalar");
-                continue;
-            }
-            var keyBytes = keyInstruction.getScalar(1).byteArrayValue();
-            println("\tFound key: " + keyFormat.formatHex(keyBytes));
+        println("Short string patterns found: " + shortStringLocations.size());
 
-            // Extract string length
-            Instruction decryptionInstruction = listing.getInstructionAt(patternAddr);
-            int cmpSearchLimit = 20;
-            Instruction cmpLenInstruction = null;
-            for (int iCounter = 0; iCounter < cmpSearchLimit; iCounter++) {
-                if (decryptionInstruction.getMnemonicString().equals("CMP")) {
-                    cmpLenInstruction = decryptionInstruction;
-                    break;
-                }
-                decryptionInstruction = decryptionInstruction.getNext();
-            }
-            if (cmpLenInstruction == null) {
-                println("\tCould not find CMP instruction");
-                continue;
-            }
-
-            if (cmpLenInstruction.getOperandType(1) != OperandType.SCALAR) {
-                println("\tSecond operand of CMP is not a scalar");
-                continue;
-            }
-            var len = cmpLenInstruction.getScalar(1).getValue();
-            println("\tFound string length: " + len);
-
+        var keyFormat = HexFormat.ofDelimiter(" ");
+        List<ObfuscatedString> obfuscatedStrings = new ArrayList();
+        // TODO: Catch exceptions
+        for (var longStr : longStringLocations) {
+            ObfuscatedString obfStr = new ObfLongString(longStr, currentProgram);
+            obfuscatedStrings.add(obfStr);
+        }
+        for (var shortStr : shortStringLocations) {
+            ObfuscatedString obfStr = new ObfShortString(shortStr, currentProgram);
+            obfuscatedStrings.add(obfStr);
         }
 
-        println("Short string patterns found: " + shortStringLocations.size());
-        for (int i = 0; i < shortStringLocations.size(); i++) {
-            println("\t[" + i + "] " + shortStringLocations.get(i));
+        // TODO: Sort
+        for (var obfStr : obfuscatedStrings) {
+            println("Obfuscated string at " + obfStr.getAddress());
+            println("\tKey: " + keyFormat.formatHex(obfStr.getKey()));
+            println("\tLength: " + obfStr.getLength());
         }
 
     }
