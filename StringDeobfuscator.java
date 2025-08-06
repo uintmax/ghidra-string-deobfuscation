@@ -8,6 +8,7 @@
 //@toolbar 
 //@runtime Java
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -60,7 +61,6 @@ class Utils {
 
     public static Instruction findFirstInstruction(String mnemonic, Address startAddr, Listing listing, boolean forward,
             int searchLimit) {
-        // TODO: Direction
         Instruction currInstr = listing.getInstructionAt(startAddr);
         Instruction targetInstr = null;
         for (int iCounter = 0; iCounter < searchLimit; iCounter++) {
@@ -68,7 +68,7 @@ class Utils {
                 targetInstr = currInstr;
                 break;
             }
-            currInstr = currInstr.getNext();
+            currInstr = forward ? currInstr.getNext() : currInstr.getPrevious();
         }
         if (targetInstr == null) {
             throw new RuntimeException("Could not find " + mnemonic + " instruction");
@@ -88,6 +88,8 @@ abstract class ObfuscatedString {
 
         key = extractKey();
         len = extractLength();
+        var obfuscatedBytes = extractObfuscatedStr(len);
+        deobfuscatedStr = decryptObfStr(obfuscatedBytes, key);
     }
 
     protected Address addr;
@@ -100,6 +102,41 @@ abstract class ObfuscatedString {
 
     protected abstract long extractLength();
 
+    private List<Byte> extractObfuscatedStr(long strLen) {
+        List<Byte> obfuscatedBytes = new ArrayList();
+        Instruction movInstr = null;
+        int searchLimit = 20;
+        Address searchAddr = addr;
+        do {
+            /*- TODO: Add optional parameter to findFirstInstruction so we don't need this loop anymore */
+            movInstr = Utils.findFirstInstruction("MOV", searchAddr, listing, false, 50);
+            searchAddr = movInstr.getPrevious().getAddress();
+            searchLimit--;
+        }
+        /*- TODO: Improve comparison, find something better than the string representation */
+        while (!movInstr.getDefaultOperandRepresentation(0).startsWith("byte ptr [RSP") && searchLimit > 0);
+
+        if (searchLimit == 0)
+            throw new RuntimeException("Could not find MOV instruction");
+
+        var currentMnemonic = movInstr.getMnemonicString();
+
+        int bytesMoved = 0;
+
+        // TODO: Improve length check
+        while (currentMnemonic.equals("MOV") && bytesMoved != strLen
+                && movInstr.getDefaultOperandRepresentation(0).startsWith("byte ptr [RSP")) {
+
+            var b = Integer.decode(movInstr.getDefaultOperandRepresentation(1)).byteValue();
+            obfuscatedBytes.add(b);
+
+            movInstr = movInstr.getPrevious();
+            currentMnemonic = movInstr.getMnemonicString();
+            bytesMoved++;
+        }
+        return obfuscatedBytes.reversed();
+    }
+
     private byte[] extractKey() {
         var keyInstruction = listing.getInstructionAt(addr);
         if (keyInstruction.getOperandType(1) != OperandType.SCALAR) {
@@ -107,6 +144,16 @@ abstract class ObfuscatedString {
         }
         var keyBytes = keyInstruction.getScalar(1).byteArrayValue();
         return keyBytes;
+    }
+
+    private String decryptObfStr(List<Byte> obfBytes, byte[] key) {
+
+        byte[] deobfBytes = new byte[obfBytes.size()];
+        for (int i = 0; i < obfBytes.size(); i++) {
+            deobfBytes[i] = (byte) (obfBytes.get(i).byteValue() ^ key[7 - (i % 8)]);
+        }
+
+        return new String(deobfBytes, StandardCharsets.UTF_8);
     }
 
     public Address getAddress() {
@@ -195,6 +242,7 @@ public class StringDeobfuscator extends GhidraScript {
             ObfuscatedString obfStr = new ObfLongString(longStr, currentProgram);
             obfuscatedStrings.add(obfStr);
         }
+
         for (var shortStr : shortStringLocations) {
             ObfuscatedString obfStr = new ObfShortString(shortStr, currentProgram);
             obfuscatedStrings.add(obfStr);
@@ -205,6 +253,7 @@ public class StringDeobfuscator extends GhidraScript {
             println("Obfuscated string at " + obfStr.getAddress());
             println("\tKey: " + keyFormat.formatHex(obfStr.getKey()));
             println("\tLength: " + obfStr.getLength());
+            println("\tDeobfuscated string: " + obfStr.getDeobfuscatedStr());
         }
 
     }
