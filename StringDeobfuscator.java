@@ -127,7 +127,10 @@ abstract class ObfuscatedString {
         while (currentMnemonic.equals("MOV") && bytesMoved != strLen
                 && movInstr.getDefaultOperandRepresentation(0).startsWith("byte ptr [RSP")) {
 
-            var b = Integer.decode(movInstr.getDefaultOperandRepresentation(1)).byteValue();
+            if (movInstr.getOperandType(1) != OperandType.SCALAR) {
+                throw new RuntimeException("Second operand of mov is not a scalar");
+            }
+            var b = (byte) movInstr.getScalar(1).getValue();
             obfuscatedBytes.add(b);
 
             movInstr = movInstr.getPrevious();
